@@ -1,1 +1,841 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Malaria Two-Stage Field Screener & Species Classifier</title>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --panel-alt: #0b1220;
+      --border: #334155;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --falc: #ef4444;
+      --vivax: #3b82f6;
+      --malariae: #f59e0b;
+      --ovale: #a855f7;
+      --ok: #22c55e;
+      --warn: #eab308;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+    header {
+      padding: 1rem 1.5rem;
+      background: var(--panel-alt);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 700;
+    }
+    .badge {
+      font-size: 0.8rem;
+      padding: 0.3rem 0.7rem;
+      border-radius: 999px;
+      background: #1e293b;
+      border: 1px solid var(--border);
+      color: var(--accent);
+    }
+    .badge.ready { color: var(--ok); border-color: rgba(34,197,94,0.4); }
+    .badge.error { color: var(--falc); border-color: rgba(239,68,68,0.4); }
+
+    main {
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 1.25rem;
+      display: grid;
+      grid-template-columns: 1.45fr 1fr;
+      gap: 1.25rem;
+    }
+    @media (max-width: 960px) {
+      main { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+    }
+    .tabs {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 0.6rem 0.9rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--panel-alt);
+      color: var(--muted);
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .tab-btn.active {
+      background: var(--accent);
+      color: #082f49;
+      border-color: var(--accent);
+    }
+
+    .controls-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 0.85rem;
+      align-items: center;
+    }
+    select, button, input[type="file"] {
+      font-family: inherit;
+      font-size: 0.9rem;
+    }
+    select {
+      flex: 1;
+      min-width: 190px;
+      padding: 0.55rem 0.7rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--panel-alt);
+      color: var(--text);
+    }
+    .btn {
+      padding: 0.55rem 0.95rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #334155;
+      color: var(--text);
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn.primary {
+      background: var(--ok);
+      color: #052e16;
+      border-color: var(--ok);
+    }
+    .btn.danger {
+      background: rgba(239,68,68,0.18);
+      color: #fca5a5;
+      border-color: rgba(239,68,68,0.4);
+    }
+
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 1.4rem;
+      text-align: center;
+      color: var(--muted);
+      background: var(--panel-alt);
+      cursor: pointer;
+      margin-bottom: 0.85rem;
+      transition: border-color 0.15s;
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    .viewport {
+      position: relative;
+      width: 100%;
+      min-height: 360px;
+      background: #020617;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    video, canvas#outputCanvas {
+      max-width: 100%;
+      max-height: 68vh;
+      display: block;
+    }
+    .hidden { display: none !important; }
+
+    .verdict-box {
+      padding: 0.95rem;
+      border-radius: 10px;
+      background: var(--panel-alt);
+      border: 1px solid var(--border);
+      margin-bottom: 1rem;
+    }
+    .verdict-title {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+    .verdict-main {
+      font-size: 1.45rem;
+      font-weight: 800;
+      margin: 0.2rem 0;
+    }
+    .warn-banner {
+      margin-top: 0.55rem;
+      padding: 0.5rem 0.7rem;
+      border-radius: 7px;
+      background: rgba(234,179,8,0.14);
+      border: 1px solid rgba(234,179,8,0.45);
+      color: #fde047;
+      font-size: 0.84rem;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    .stat {
+      background: var(--panel-alt);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.55rem;
+      text-align: center;
+    }
+    .stat strong { display: block; font-size: 1.15rem; }
+    .stat span { font-size: 0.75rem; color: var(--muted); }
+
+    .bar-group { margin-bottom: 0.65rem; }
+    .bar-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.86rem;
+      margin-bottom: 0.2rem;
+    }
+    .bar-track {
+      height: 9px;
+      background: var(--panel-alt);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      width: 0%;
+      transition: width 0.25s ease;
+    }
+
+    .slider-card {
+      background: var(--panel-alt);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.7rem;
+      margin: 1rem 0;
+      font-size: 0.85rem;
+    }
+    .slider-card input[type="range"] { width: 100%; margin-top: 0.35rem; }
+
+    .crops-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+      gap: 0.55rem;
+      max-height: 250px;
+      overflow-y: auto;
+      padding-right: 0.2rem;
+    }
+    .crop-item {
+      background: var(--panel-alt);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.3rem;
+      text-align: center;
+      font-size: 0.73rem;
+    }
+    .crop-item img {
+      width: 100%;
+      aspect-ratio: 1;
+      object-fit: cover;
+      border-radius: 5px;
+      display: block;
+      margin-bottom: 0.25rem;
+    }
+    .crop-item.rejected { opacity: 0.55; border-style: dashed; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Malaria Two-Stage Field Screener (YOLO11n + MobileNetV2)</h1>
+      <div style="font-size:0.8rem;color:var(--muted);">100% Client-Side Browser Inference · No Slide Data Leaves Your Device</div>
+    </div>
+    <div id="modelStatus" class="badge">Loading ONNX models...</div>
+  </header>
+
+  <main>
+    <!-- Left Column: Live Microscope Camera & Saved Slide Upload -->
+    <section class="card">
+      <div class="tabs">
+        <button id="tabCamera" class="tab-btn active" type="button">Live Microscope Camera</button>
+        <button id="tabUpload" class="tab-btn" type="button">Upload Scanned Slide</button>
+      </div>
+
+      <!-- Camera Controls -->
+      <div id="cameraPanel">
+        <div class="controls-row">
+          <select id="cameraSelect" title="Select USB Microscope or Webcam">
+            <option value="">Detecting cameras...</option>
+          </select>
+          <button id="refreshCamBtn" class="btn" type="button" title="Refresh Camera List">Refresh</button>
+          <button id="startCamBtn" class="btn" type="button">Start Live Feed</button>
+          <button id="captureBtn" class="btn primary" type="button" disabled>Capture &amp; Analyze Field</button>
+        </div>
+      </div>
+
+      <!-- File Upload Controls -->
+      <div id="uploadPanel" class="hidden">
+        <div id="dropzone" class="dropzone">
+          <strong>Click to select a thin-smear micrograph</strong> or drag &amp; drop here (.jpg, .png, .tif)
+          <input id="fileInput" type="file" accept="image/*" class="hidden" />
+        </div>
+      </div>
+
+      <div class="controls-row" style="justify-content:space-between;">
+        <label style="font-size:0.83rem;color:var(--muted);display:flex;align-items:center;gap:0.4rem;cursor:pointer;">
+          <input id="showRejectedToggle" type="checkbox" checked />
+          Show Stage 2 rejected false alarms (gray dashed boxes)
+        </label>
+        <button id="backToLiveBtn" class="btn hidden" type="button">Resume Live Viewfinder</button>
+      </div>
+
+      <div class="viewport">
+        <video id="videoFeed" autoplay playsinline muted class="hidden"></video>
+        <canvas id="outputCanvas"></canvas>
+        <div id="placeholderMsg" style="color:var(--muted);padding:1.5rem;text-align:center;">
+          Start your connected USB microscope camera or switch to <strong>Upload Scanned Slide</strong>.
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Column: Slide Diagnosis, Species Probabilities & Cell Crops -->
+    <aside class="card">
+      <div class="verdict-box">
+        <div class="verdict-title">Slide-Level Diagnostic Verdict</div>
+        <div id="verdictSpecies" class="verdict-main">Awaiting field capture</div>
+        <div id="verdictSub" style="font-size:0.86rem;color:var(--muted);">
+          Capture a microscope field or upload a saved image to begin.
+        </div>
+        <div id="lowConfWarn" class="warn-banner hidden">
+          Low slide-level vote confidence (&lt; 60%). Early ring forms or low parasitemia can overlap morphologically—manual microscopist confirmation recommended.
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat">
+          <strong id="statRaw">0</strong>
+          <span>Stage 1 Boxes</span>
+        </div>
+        <div class="stat">
+          <strong id="statFiltered">0</strong>
+          <span>Filtered Out</span>
+        </div>
+        <div class="stat">
+          <strong id="statConfirmed" style="color:var(--ok);">0</strong>
+          <span>Confirmed Parasites</span>
+        </div>
+      </div>
+
+      <div style="font-weight:700;font-size:0.92rem;margin-bottom:0.55rem;">
+        Aggregated Species Confidence (Soft Vote)
+      </div>
+      <div id="speciesBars"></div>
+
+      <div class="slider-card">
+        <div style="display:flex;justify-content:space-between;">
+          <span>Stage 1 Detector Sensitivity Threshold</span>
+          <strong id="confVal">0.30</strong>
+        </div>
+        <input id="confSlider" type="range" min="0.15" max="0.65" step="0.05" value="0.30" />
+        <div style="font-size:0.76rem;color:var(--muted);margin-top:0.2rem;">
+          Lower catches faint rings; higher reduces platelet/debris false alarms.
+        </div>
+      </div>
+
+      <div style="font-weight:700;font-size:0.92rem;margin-bottom:0.5rem;">
+        Stage 2 Inspected Cell Patches (224&times;224)
+      </div>
+      <div id="cropsGrid" class="crops-grid"></div>
+    </aside>
+  </main>
+
+  <script>
+    // Configure ONNX Runtime Web WASM assets from jsDelivr CDN
+    ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
+
+    const SPECIES_COLORS = {
+      Falciparum: "#ef4444",
+      Vivax:      "#3b82f6",
+      Malariae:   "#f59e0b",
+      Ovale:      "#a855f7",
+      Uninfected: "#94a3b8"
+    };
+    const DISPLAY_SPECIES = ["Falciparum", "Vivax", "Malariae", "Ovale"];
+
+    let stage1Session = null;
+    let stage2Session = null;
+    let classNames = ["Falciparum", "Malariae", "Ovale", "Uninfected", "Vivax"];
+    let activeStream = null;
+    let lastSourceCanvas = null;
+    let lastAnalysis = null;
+
+    // UI Elements
+    const statusBadge = document.getElementById("modelStatus");
+    const tabCamera = document.getElementById("tabCamera");
+    const tabUpload = document.getElementById("tabUpload");
+    const cameraPanel = document.getElementById("cameraPanel");
+    const uploadPanel = document.getElementById("uploadPanel");
+    const cameraSelect = document.getElementById("cameraSelect");
+    const refreshCamBtn = document.getElementById("refreshCamBtn");
+    const startCamBtn = document.getElementById("startCamBtn");
+    const captureBtn = document.getElementById("captureBtn");
+    const backToLiveBtn = document.getElementById("backToLiveBtn");
+    const dropzone = document.getElementById("dropzone");
+    const fileInput = document.getElementById("fileInput");
+    const videoFeed = document.getElementById("videoFeed");
+    const outputCanvas = document.getElementById("outputCanvas");
+    const placeholderMsg = document.getElementById("placeholderMsg");
+    const confSlider = document.getElementById("confSlider");
+    const confVal = document.getElementById("confVal");
+    const showRejectedToggle = document.getElementById("showRejectedToggle");
+
+    // Build initial species probability bars
+    const speciesBarsEl = document.getElementById("speciesBars");
+    DISPLAY_SPECIES.forEach(sp => {
+      speciesBarsEl.innerHTML += `
+        <div class="bar-group">
+          <div class="bar-label">
+            <span><em>Plasmodium ${sp.toLowerCase()}</em></span>
+            <strong id="pct_${sp}">0.0%</strong>
+          </div>
+          <div class="bar-track">
+            <div id="bar_${sp}" class="bar-fill" style="background:${SPECIES_COLORS[sp]};"></div>
+          </div>
+        </div>
+      `;
+    });
+
+    // 1. Load ONNX Models on Startup
+    async function initModels() {
+      try {
+        try {
+          const clsResp = await fetch("./stage2_classes.json");
+          if (clsResp.ok) classNames = await clsResp.json();
+        } catch (_) {}
+
+        const sessionOpts = { executionProviders: ["webgpu", "wasm"] };
+        try {
+          [stage1Session, stage2Session] = await Promise.all([
+            ort.InferenceSession.create("./stage1_yolo11n.onnx", sessionOpts),
+            ort.InferenceSession.create("./stage2_mobilenetv2.onnx", sessionOpts)
+          ]);
+        } catch (_) {
+          // Pure WASM fallback if WebGPU is unavailable
+          const wasmOpts = { executionProviders: ["wasm"] };
+          [stage1Session, stage2Session] = await Promise.all([
+            ort.InferenceSession.create("./stage1_yolo11n.onnx", wasmOpts),
+            ort.InferenceSession.create("./stage2_mobilenetv2.onnx", wasmOpts)
+          ]);
+        }
+
+        statusBadge.textContent = "Models Ready (Stage 1 + Stage 2)";
+        statusBadge.classList.add("ready");
+      } catch (err) {
+        console.error(err);
+        statusBadge.textContent = "Model Load Error — Serve via GitHub Pages / HTTP";
+        statusBadge.classList.add("error");
+      }
+    }
+
+    // 2. Camera Enumeration & Live Feed Management
+    async function populateCameras() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        cameraSelect.innerHTML = `<option value="">Camera API unavailable in this browser</option>`;
+        return;
+      }
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videos = devices.filter(d => d.kind === "videoinput");
+        cameraSelect.innerHTML = "";
+        if (videos.length === 0) {
+          cameraSelect.innerHTML = `<option value="">No microscope or webcam detected</option>`;
+          return;
+        }
+        videos.forEach((dev, idx) => {
+          const opt = document.createElement("option");
+          opt.value = dev.deviceId;
+          opt.textContent = dev.label || `Microscope / Camera #${idx + 1}`;
+          cameraSelect.appendChild(opt);
+        });
+      } catch (e) {
+        cameraSelect.innerHTML = `<option value="">Grant camera permission to list devices</option>`;
+      }
+    }
+
+    function stopCamera() {
+      if (activeStream) {
+        activeStream.getTracks().forEach(t => t.stop());
+        activeStream = null;
+      }
+      videoFeed.srcObject = null;
+      videoFeed.classList.add("hidden");
+      captureBtn.disabled = true;
+      startCamBtn.textContent = "Start Live Feed";
+      startCamBtn.classList.remove("danger");
+    }
+
+    async function startCamera() {
+      if (activeStream) {
+        stopCamera();
+        return;
+      }
+      try {
+        const selectedId = cameraSelect.value;
+        const constraints = {
+          video: {
+            deviceId: selectedId ? { exact: selectedId } : undefined,
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          },
+          audio: false
+        };
+        activeStream = await navigator.mediaDevices.getUserMedia(constraints);
+        await populateCameras(); // Refresh labels once permission is granted
+        if (selectedId) cameraSelect.value = selectedId;
+
+        videoFeed.srcObject = activeStream;
+        videoFeed.classList.remove("hidden");
+        outputCanvas.classList.add("hidden");
+        placeholderMsg.classList.add("hidden");
+        backToLiveBtn.classList.add("hidden");
+        captureBtn.disabled = false;
+        startCamBtn.textContent = "Stop Camera";
+        startCamBtn.classList.add("danger");
+      } catch (err) {
+        alert("Could not open microscope camera: " + err.message);
+      }
+    }
+
+    // 3. Two-Stage Inference Pipeline
+    async function runTwoStagePipeline(sourceCanvas) {
+      if (!stage1Session || !stage2Session) {
+        alert("Models are still loading — please wait a few seconds.");
+        return;
+      }
+
+      lastSourceCanvas = sourceCanvas;
+      const origW = sourceCanvas.width;
+      const origH = sourceCanvas.height;
+      const confThresh = parseFloat(confSlider.value);
+
+      statusBadge.textContent = "Analyzing field...";
+      await new Promise(r => setTimeout(r, 20)); // Yield so UI updates
+
+      // --- STAGE 1: Letterbox to 960x960 (matching Ultralytics preprocessing) ---
+      const S1_SIZE = 960;
+      const scale = Math.min(S1_SIZE / origW, S1_SIZE / origH);
+      const newW = Math.round(origW * scale);
+      const newH = Math.round(origH * scale);
+      const padX = Math.floor((S1_SIZE - newW) / 2);
+      const padY = Math.floor((S1_SIZE - newH) / 2);
+
+      const lbCanvas = document.createElement("canvas");
+      lbCanvas.width = S1_SIZE;
+      lbCanvas.height = S1_SIZE;
+      const lbCtx = lbCanvas.getContext("2d");
+      lbCtx.fillStyle = "rgb(114, 114, 114)";
+      lbCtx.fillRect(0, 0, S1_SIZE, S1_SIZE);
+      lbCtx.drawImage(sourceCanvas, padX, padY, newW, newH);
+
+      const lbData = lbCtx.getImageData(0, 0, S1_SIZE, S1_SIZE).data;
+      const s1Float = new Float32Array(3 * S1_SIZE * S1_SIZE);
+      const planeSize = S1_SIZE * S1_SIZE;
+      for (let i = 0; i < planeSize; i++) {
+        const idx = i * 4;
+        s1Float[i] = lbData[idx] / 255.0;
+        s1Float[planeSize + i] = lbData[idx + 1] / 255.0;
+        s1Float[2 * planeSize + i] = lbData[idx + 2] / 255.0;
+      }
+
+      const s1Tensor = new ort.Tensor("float32", s1Float, [1, 3, S1_SIZE, S1_SIZE]);
+      const s1OutMap = await stage1Session.run({ [stage1Session.inputNames[0]]: s1Tensor });
+      const s1Out = s1OutMap[stage1Session.outputNames[0]].data; // [1, 300, 6] -> x1, y1, x2, y2, score, class
+
+      const candidates = [];
+      for (let i = 0; i < 300; i++) {
+        const off = i * 6;
+        const score = s1Out[off + 4];
+        if (score < confThresh) continue;
+
+        const x1 = Math.max(0, (s1Out[off] - padX) / scale);
+        const y1 = Math.max(0, (s1Out[off + 1] - padY) / scale);
+        const x2 = Math.min(origW, (s1Out[off + 2] - padX) / scale);
+        const y2 = Math.min(origH, (s1Out[off + 3] - padY) / scale);
+        if (x2 - x1 > 4 && y2 - y1 > 4) {
+          candidates.push({ x1, y1, x2, y2, detConf: score });
+        }
+      }
+
+      // --- STAGE 2: High-res context crops -> MobileNetV2 (224x224, raw RGB [0..255]) ---
+      const CROP_SIZE = 224;
+      const cropCanvas = document.createElement("canvas");
+      cropCanvas.width = CROP_SIZE;
+      cropCanvas.height = CROP_SIZE;
+      const cropCtx = cropCanvas.getContext("2d");
+
+      const confirmed = [];
+      const rejected = [];
+      const minHalf = Math.round(Math.min(origW, origH) * 0.072); // Scales ~140px at 1944p
+
+      for (const box of candidates) {
+        const bw = box.x2 - box.x1;
+        const bh = box.y2 - box.y1;
+        const cx = (box.x1 + box.x2) / 2;
+        const cy = (box.y1 + box.y2) / 2;
+        const half = Math.max(Math.round(Math.max(bw, bh) * 1.15), minHalf);
+
+        const px1 = Math.max(0, Math.round(cx - half));
+        const py1 = Math.max(0, Math.round(cy - half));
+        const px2 = Math.min(origW, Math.round(cx + half));
+        const py2 = Math.min(origH, Math.round(cy + half));
+
+        cropCtx.clearRect(0, 0, CROP_SIZE, CROP_SIZE);
+        cropCtx.drawImage(sourceCanvas, px1, py1, px2 - px1, py2 - py1, 0, 0, CROP_SIZE, CROP_SIZE);
+        const cropUrl = cropCanvas.toDataURL("image/jpeg", 0.85);
+
+        const rgba = cropCtx.getImageData(0, 0, CROP_SIZE, CROP_SIZE).data;
+        const nhwc = new Float32Array(CROP_SIZE * CROP_SIZE * 3);
+        for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
+          nhwc[j] = rgba[i];         // R in [0, 255]
+          nhwc[j + 1] = rgba[i + 1]; // G in [0, 255]
+          nhwc[j + 2] = rgba[i + 2]; // B in [0, 255]
+        }
+
+        const s2Tensor = new ort.Tensor("float32", nhwc, [1, CROP_SIZE, CROP_SIZE, 3]);
+        const s2OutMap = await stage2Session.run({ [stage2Session.inputNames[0]]: s2Tensor });
+        const probs = Array.from(s2OutMap[stage2Session.outputNames[0]].data);
+
+        let topIdx = 0;
+        for (let k = 1; k < probs.length; k++) {
+          if (probs[k] > probs[topIdx]) topIdx = k;
+        }
+        const topLabel = classNames[topIdx];
+        const entry = { ...box, label: topLabel, conf: probs[topIdx], probs, cropUrl };
+
+        if (topLabel === "Uninfected") {
+          rejected.push(entry);
+        } else {
+          confirmed.push(entry);
+        }
+      }
+
+      lastAnalysis = { confirmed, rejected, rawCount: candidates.length };
+      renderResults();
+      statusBadge.textContent = "Models Ready (Stage 1 + Stage 2)";
+    }
+
+    // 4. Render Annotated Canvas, Slide Vote & Crop Gallery
+    function renderResults() {
+      if (!lastSourceCanvas || !lastAnalysis) return;
+
+      const { confirmed, rejected, rawCount } = lastAnalysis;
+      outputCanvas.width = lastSourceCanvas.width;
+      outputCanvas.height = lastSourceCanvas.height;
+      const ctx = outputCanvas.getContext("2d");
+      ctx.drawImage(lastSourceCanvas, 0, 0);
+
+      const lineW = Math.max(3, Math.round(outputCanvas.width / 380));
+      const fontSize = Math.max(15, Math.round(outputCanvas.width / 65));
+      ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
+
+      if (showRejectedToggle.checked) {
+        ctx.save();
+        ctx.setLineDash([lineW * 2, lineW * 1.5]);
+        ctx.lineWidth = Math.max(2, lineW - 1);
+        ctx.strokeStyle = SPECIES_COLORS.Uninfected;
+        ctx.fillStyle = SPECIES_COLORS.Uninfected;
+        for (const r of rejected) {
+          ctx.strokeRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
+          ctx.fillText(`Filtered ${(r.conf * 100).toFixed(0)}%`, r.x1, Math.max(fontSize + 4, r.y1 - 6));
+        }
+        ctx.restore();
+      }
+
+      for (const c of confirmed) {
+        const col = SPECIES_COLORS[c.label] || "#22c55e";
+        ctx.lineWidth = lineW;
+        ctx.strokeStyle = col;
+        ctx.strokeRect(c.x1, c.y1, c.x2 - c.x1, c.y2 - c.y1);
+
+        const tag = `${c.label.slice(0, 4)} ${(c.conf * 100).toFixed(0)}%`;
+        const textW = ctx.measureText(tag).width;
+        const labelY = Math.max(fontSize + 8, c.y1 - 4);
+        ctx.fillStyle = col;
+        ctx.fillRect(c.x1, labelY - fontSize - 2, textW + 10, fontSize + 6);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(tag, c.x1 + 5, labelY - 2);
+      }
+
+      // Show annotated canvas
+      videoFeed.classList.add("hidden");
+      placeholderMsg.classList.add("hidden");
+      outputCanvas.classList.remove("hidden");
+      if (activeStream) backToLiveBtn.classList.remove("hidden");
+
+      // Update summary counters
+      document.getElementById("statRaw").textContent = rawCount;
+      document.getElementById("statFiltered").textContent = rejected.length;
+      document.getElementById("statConfirmed").textContent = confirmed.length;
+
+      // Slide-level soft vote across confirmed parasites
+      const verdictEl = document.getElementById("verdictSpecies");
+      const subEl = document.getElementById("verdictSub");
+      const warnEl = document.getElementById("lowConfWarn");
+
+      if (confirmed.length === 0) {
+        verdictEl.textContent = "Uninfected Field";
+        verdictEl.style.color = "var(--ok)";
+        subEl.textContent = rejected.length > 0
+          ? `0 confirmed parasites (${rejected.length} false-positive artifact box rejected by Stage 2).`
+          : "No parasitized erythrocytes detected in this microscope field.";
+        warnEl.classList.add("hidden");
+        DISPLAY_SPECIES.forEach(sp => {
+          document.getElementById(`pct_${sp}`).textContent = "0.0%";
+          document.getElementById(`bar_${sp}`).style.width = "0%";
+        });
+      } else {
+        const voteSums = { Falciparum: 0, Vivax: 0, Malariae: 0, Ovale: 0 };
+        for (const c of confirmed) {
+          DISPLAY_SPECIES.forEach(sp => {
+            const idx = classNames.indexOf(sp);
+            if (idx >= 0) voteSums[sp] += c.probs[idx];
+          });
+        }
+        const total = Object.values(voteSums).reduce((a, b) => a + b, 0) || 1;
+        let bestSp = "Falciparum";
+        let bestPct = 0;
+
+        DISPLAY_SPECIES.forEach(sp => {
+          const pct = (voteSums[sp] / total) * 100;
+          document.getElementById(`pct_${sp}`).textContent = `${pct.toFixed(1)}%`;
+          document.getElementById(`bar_${sp}`).style.width = `${pct.toFixed(1)}%`;
+          if (pct > bestPct) {
+            bestPct = pct;
+            bestSp = sp;
+          }
+        });
+
+        verdictEl.textContent = `Plasmodium ${bestSp.toLowerCase()}`;
+        verdictEl.style.color = SPECIES_COLORS[bestSp];
+        subEl.textContent = `Slide vote confidence: ${bestPct.toFixed(1)}% across ${confirmed.length} confirmed parasite(s).`;
+        warnEl.classList.toggle("hidden", bestPct >= 60);
+      }
+
+      // Populate inspected cell patch thumbnails
+      const cropsGrid = document.getElementById("cropsGrid");
+      cropsGrid.innerHTML = "";
+      [...confirmed, ...rejected].forEach(item => {
+        const isRej = item.label === "Uninfected";
+        const col = SPECIES_COLORS[item.label] || "#94a3b8";
+        cropsGrid.innerHTML += `
+          <div class="crop-item ${isRej ? "rejected" : ""}">
+            <img src="${item.cropUrl}" alt="${item.label}" />
+            <div style="font-weight:700;color:${col};">${isRej ? "Filtered" : item.label}</div>
+            <div style="color:var(--muted);">${(item.conf * 100).toFixed(0)}%</div>
+          </div>
+        `;
+      });
+    }
+
+    // 5. Event Listeners
+    tabCamera.addEventListener("click", () => {
+      tabCamera.classList.add("active");
+      tabUpload.classList.remove("active");
+      cameraPanel.classList.remove("hidden");
+      uploadPanel.classList.add("hidden");
+    });
+
+    tabUpload.addEventListener("click", () => {
+      tabUpload.classList.add("active");
+      tabCamera.classList.remove("active");
+      uploadPanel.classList.remove("hidden");
+      cameraPanel.classList.add("hidden");
+      stopCamera();
+      backToLiveBtn.classList.add("hidden");
+    });
+
+    refreshCamBtn.addEventListener("click", populateCameras);
+    startCamBtn.addEventListener("click", startCamera);
+
+    captureBtn.addEventListener("click", () => {
+      if (!activeStream || !videoFeed.videoWidth) return;
+      const snap = document.createElement("canvas");
+      snap.width = videoFeed.videoWidth;
+      snap.height = videoFeed.videoHeight;
+      snap.getContext("2d").drawImage(videoFeed, 0, 0);
+      runTwoStagePipeline(snap);
+    });
+
+    backToLiveBtn.addEventListener("click", () => {
+      if (activeStream) {
+        outputCanvas.classList.add("hidden");
+        videoFeed.classList.remove("hidden");
+        backToLiveBtn.classList.add("hidden");
+      }
+    });
+
+    function handleImageFile(file) {
+      if (!file || !file.type.startsWith("image/")) return;
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        c.getContext("2d").drawImage(img, 0, 0);
+        runTwoStagePipeline(c);
+        URL.revokeObjectURL(img.src);
+      };
+      img.src = URL.createObjectURL(file);
+    }
+
+    dropzone.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", e => handleImageFile(e.target.files[0]));
+    dropzone.addEventListener("dragover", e => { e.preventDefault(); dropzone.classList.add("dragover"); });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+    dropzone.addEventListener("drop", e => {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+      handleImageFile(e.dataTransfer.files[0]);
+    });
+
+    confSlider.addEventListener("input", () => {
+      confVal.textContent = parseFloat(confSlider.value).toFixed(2);
+    });
+    confSlider.addEventListener("change", () => {
+      if (lastSourceCanvas) runTwoStagePipeline(lastSourceCanvas);
+    });
+    showRejectedToggle.addEventListener("change", renderResults);
+
+    // Initialize on load
+    initModels();
+    populateCameras();
+  </script>
+</body>
+</html>
 
