@@ -285,6 +285,14 @@
       <div class="tabs">
         <button id="tabCamera" class="tab-btn active" type="button">Live Microscope Camera</button>
         <button id="tabUpload" class="tab-btn" type="button">Upload Scanned Slide</button>
+              <!-- 1-Click Validation Sample Slides -->
+      <div class="controls-row" style="margin-bottom:0.85rem;">
+        <span style="font-size:0.8rem;color:var(--muted);font-weight:600;">Demo Slides (Unseen Val):</span>
+        <button class="btn" type="button" onclick="loadSampleSlide('./samples/falciparum.jpg')">P. falciparum</button>
+        <button class="btn" type="button" onclick="loadSampleSlide('./samples/vivax.jpg')">P. vivax</button>
+        <button class="btn" type="button" onclick="loadSampleSlide('./samples/malariae.jpg')">P. malariae</button>
+        <button class="btn" type="button" onclick="loadSampleSlide('./samples/ovale.jpg')">P. ovale</button>
+      </div>
       </div>
 
       <!-- Camera Controls -->
@@ -831,7 +839,31 @@
       if (lastSourceCanvas) runTwoStagePipeline(lastSourceCanvas);
     });
     showRejectedToggle.addEventListener("change", renderResults);
+    
+    function loadSampleSlide(url) {
+      if (!stage1Session || !stage2Session) {
+        alert("Models are still loading — please wait a few seconds.");
+        return;
+      }
+      stopCamera();
+      backToLiveBtn.classList.add("hidden");
+      statusBadge.textContent = "Loading sample slide...";
 
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        c.getContext("2d").drawImage(img, 0, 0);
+        runTwoStagePipeline(c);
+      };
+      img.onerror = () => {
+        statusBadge.textContent = "Sample image not found in ./samples/";
+        statusBadge.classList.add("error");
+      };
+      img.src = url;
+    }
     // Initialize on load
     initModels();
     populateCameras();
